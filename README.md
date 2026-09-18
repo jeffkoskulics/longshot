@@ -53,6 +53,24 @@ interesting part.
 6. **Export.** A long log easily reconstructs past what a browser will encode in
    one image, so the result is sliced into overlapping panels when it has to be.
 
+## Recording one window
+
+**Record a window** asks the browser's picker for a *single window* — not a
+screen, not a tab, and never Longshot itself. Pick the window you want to scroll
+and that is all that is captured; nothing else on your desktop reaches the
+recording. Where a browser refuses to pre-select the surface type, or you choose
+a whole screen anyway, the app says which surface you actually shared rather than
+letting you assume it was just the one window.
+
+The recording lives in memory as a Blob and is written nowhere — no disk, no
+upload, no server. **Delete the recording as soon as the image is made** is on by
+default: when the stitch finishes, the Blob is dropped and every object URL
+issued for it is revoked, and the app tells you how much it released. Untick it
+to keep the capture for a second pass at a different sampling rate. Either way
+there is a **Delete the recording** button on the crop and result steps, and
+leaving the page deletes it too. A video you brought in with **Choose a video** is
+your own file and is never deleted — only the decoded copy is released.
+
 ## Recording a good source
 
 - Scroll steadily rather than flicking. Pausing is fine, and so is going back.

@@ -30,11 +30,18 @@
         Choose a video
         <input type="file" id="file" accept="video/*" hidden>
       </label>
-      <button class="btn" id="record" hidden>Record the screen</button>
+      <button class="btn" id="record" hidden>Record a window</button>
       <button class="btn danger" id="stop-record" hidden>Stop recording</button>
     </div>
+    <p class="hint" id="record-hint" hidden>The picker lists your open windows — choose the single
+      one you want captured. Only that window is recorded; the rest of your screen is never seen.</p>
+    <label class="check" id="autodelete-wrap" hidden>
+      <input type="checkbox" id="autodelete" checked>
+      Delete the recording as soon as the image is made
+    </label>
     <p class="hint" id="record-note" hidden>Screen recording isn’t available in this browser.
       Use your system screen recorder, then choose the file.</p>
+    <p class="hint" id="record-status" hidden></p>
   </section>
 
   <section id="step-crop" class="step">
@@ -58,9 +65,11 @@
         </select>
       </label>
     </div>
+    <p class="hint" id="croprec" hidden></p>
     <div class="row">
       <button class="btn primary" id="go">Stitch it</button>
       <button class="btn" id="redetect">Re-detect</button>
+      <button class="btn danger" id="discard" hidden>Delete the recording</button>
       <button class="btn ghost" id="back-input">Start over</button>
     </div>
   </section>
@@ -77,7 +86,9 @@
     <p class="hint" id="donestat"></p>
     <div class="row" id="downloads"></div>
     <div id="preview"></div>
+    <p class="hint" id="recstat" hidden></p>
     <div class="row">
+      <button class="btn danger" id="discard-done" hidden>Delete the recording</button>
       <button class="btn ghost" id="again">Do another</button>
     </div>
   </section>

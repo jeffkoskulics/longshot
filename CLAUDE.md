@@ -27,10 +27,12 @@ require an origin.
 ./tests/run.sh
 ```
 
-Headless tests of the registration math, run under JavaScriptCore (ships with
-macOS — no toolchain to install). They cover shift recovery, rejection of
-false matches, a full scroll path with pauses and reversals, drift behaviour,
-and relocalisation.
+Headless tests of the registration math and of capture deletion, run under
+JavaScriptCore (ships with macOS — no toolchain to install). The registration
+tests cover shift recovery, rejection of false matches, a full scroll path with
+pauses and reversals, drift behaviour, and relocalisation.
+`tests/recording.test.mjs` asserts that deleting a capture really does revoke
+every URL it issued and drop the video data.
 
 ```sh
 ./tests/run-browser.sh
@@ -68,7 +70,7 @@ The pipeline is five stages, each its own module:
 
 | Module | Job |
 |---|---|
-| `js/capture.js` | File picker and screen recording; normalises to a seekable `<video>` |
+| `js/capture.js` | File picker and single-window recording; owns the capture's lifetime and deletion; normalises to a seekable `<video>` |
 | `js/roi.js` | Finds the scrolling viewport by temporal variance across sampled frames |
 | `js/register.js` | 1-D row signatures, normalised cross-correlation, confidence, fusion |
 | `js/docmap.js` | Signature of the reconstructed document in absolute coordinates |
@@ -92,5 +94,15 @@ Things that look like details but are not:
 - **`repaint()` in the pipeline exists because bisection recurses.** The
   full-resolution scratch canvas can hold a different moment than the frame being
   composited. Removing it reintroduces a silent pixel-attribution bug.
+- **A capture has exactly one owner.** `Recording` holds the Blob, every object
+  URL issued for it and the `<video>` built from it, and `delete()` tears down
+  all three. Handing the Blob around and revoking URLs ad hoc is how "the
+  recording is deleted" quietly stops being true: an un-revoked object URL keeps
+  the video alive. `js/main.js` routes *every* exit — the button, the end of a
+  stitch, starting over, `pagehide` — through `deleteRecording()`.
+- **`displaySurface: 'window'` is a preference, not a guarantee.** The browser
+  may still hand back a monitor, so the surface is read back off the track and
+  reported to the user. Telling them they shared one window when they shared the
+  desktop is the bad failure here.
 - **The ROI must exclude static chrome.** A fixed toolbar inside the crop gets
   stamped in at every scroll position.
