@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>Longshot — video to long screenshot</title>
+<meta name="description" content="Turn a video of yourself scrolling a chat log or console into one tall still image. Runs entirely in your browser.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header>
+  <h1>Longshot</h1>
+  <p class="tag">Record yourself scrolling. Get one tall image back.</p>
+</header>
+
+<main>
+
+  <section id="step-input" class="step active">
+    <h2>1 · Bring in a video</h2>
+    <p class="hint">Scroll steadily through the window you want captured. Pausing is fine, and so is
+      scrolling back up — the registration is tracked in document coordinates, not frame by frame.</p>
+    <div class="row">
+      <label class="btn primary">
+        Choose a video
+        <input type="file" id="file" accept="video/*" hidden>
+      </label>
+      <button class="btn" id="record" hidden>Record the screen</button>
+      <button class="btn danger" id="stop-record" hidden>Stop recording</button>
+    </div>
+    <p class="hint" id="record-note" hidden>Screen recording isn’t available in this browser.
+      Use your system screen recorder, then choose the file.</p>
+  </section>
+
+  <section id="step-crop" class="step">
+    <h2>2 · Confirm the scrolling area</h2>
+    <p class="hint">Everything that stays put — title bars, tab strips, the message box — has to stay
+      outside this box, or it gets stamped in at every scroll position. Drag the edges to adjust.</p>
+    <div id="cropwrap">
+      <canvas id="poster"></canvas>
+      <div id="croprect"><span class="h n"></span><span class="h s"></span><span class="h w"></span><span class="h e"></span></div>
+    </div>
+    <div class="row">
+      <label class="field">Frame
+        <input type="range" id="scrub" min="0" max="1000" value="20">
+      </label>
+      <label class="field">Sampling
+        <select id="fps">
+          <option value="6">6 fps — fastest</option>
+          <option value="10" selected>10 fps — balanced</option>
+          <option value="15">15 fps — careful</option>
+          <option value="24">24 fps — slowest, most robust</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="go">Stitch it</button>
+      <button class="btn" id="redetect">Re-detect</button>
+      <button class="btn ghost" id="back-input">Start over</button>
+    </div>
+  </section>
+
+  <section id="step-run" class="step">
+    <h2>3 · Stitching</h2>
+    <div class="bar"><div id="barfill"></div></div>
+    <p class="hint" id="runstat">Working…</p>
+    <button class="btn danger" id="cancel">Cancel</button>
+  </section>
+
+  <section id="step-done" class="step">
+    <h2>4 · Result</h2>
+    <p class="hint" id="donestat"></p>
+    <div class="row" id="downloads"></div>
+    <div id="preview"></div>
+    <div class="row">
+      <button class="btn ghost" id="again">Do another</button>
+    </div>
+  </section>
+
+  <p id="err" class="err" hidden></p>
+
+</main>
+
+<footer>
+  <p>Everything happens on this device. No video is uploaded anywhere.</p>
+  <p><a href="https://github.com/jeffkoskulics/longshot">Source on GitHub</a></p>
+</footer>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

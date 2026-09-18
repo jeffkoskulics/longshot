@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Longshot — browser self-test</title>
+<style>
+  body { background:#0f1115; color:#e6e9ef; font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; margin:0; padding:1.5rem; }
+  h1 { font-size:1.2rem; } h2 { font-size:1rem; margin-top:1.6rem; }
+  .ok { color:#6ee7a8; } .fail { color:#ff6b6b; } .dim { color:#99a1b3; }
+  #out { white-space:pre-wrap; }
+  .panes { display:flex; gap:1rem; align-items:flex-start; margin-top:1rem; }
+  .pane { flex:1; min-width:0; }
+  canvas.view { width:100%; border:1px solid #262b36; border-radius:6px; background:#000; }
+  .scroller { max-height:70vh; overflow:auto; border:1px solid #262b36; border-radius:6px; }
+</style>
+</head>
+<body>
+<h1>Longshot browser self-test</h1>
+<p class="dim">Drives the real stitching pipeline over a synthetic scroll — down, pause,
+back up, a fast flick, then down again — and compares the reconstruction against the
+document it was generated from. Open this from a local server, not file://.</p>
+<div id="out">running…</div>
+<div class="panes">
+  <div class="pane"><h2>Ground truth</h2><div class="scroller"><canvas id="truth" class="view"></canvas></div></div>
+  <div class="pane"><h2>Reconstruction</h2><div class="scroller"><canvas id="got" class="view"></canvas></div></div>
+  <div class="pane"><h2>Difference</h2><div class="scroller"><canvas id="diff" class="view"></canvas></div></div>
+</div>
+
+<script type="module">
+import { stitchFrames } from '../js/pipeline.js';
+
+const out = document.getElementById('out');
+let failures = 0;
+const log = (s, cls = '') => out.insertAdjacentHTML('beforeend', `\n<span class="${cls}">${s}</span>`);
+const check = (name, cond, detail = '') => {
+  if (!cond) failures++;
+  log(`${cond ? '  ok  ' : '  FAIL'} ${name}${detail ? '  — ' + detail : ''}`, cond ? 'ok' : 'fail');
+};
+
+// ---- synthetic document: something that looks like a chat log -------------
+const W = 520, DOC_H = 7000;
+const truth = document.createElement('canvas');
+truth.width = W; truth.height = DOC_H;
+{
+  const c = truth.getContext('2d');
+  c.fillStyle = '#12151c'; c.fillRect(0, 0, W, DOC_H);
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  let y = 12;
+  while (y < DOC_H) {
+    const mine = rnd() > 0.5;
+    const lines = 1 + Math.floor(rnd() * 4);
+    const w = 120 + rnd() * (W - 190);
+    const h = lines * 19 + 14;
+    c.fillStyle = mine ? '#1f3b63' : '#1d222c';
+    roundRect(c, mine ? W - w - 16 : 16, y, w, h, 10); c.fill();
+    c.fillStyle = mine ? '#cfe2ff' : '#c8cede';
+    for (let i = 0; i < lines; i++) {
+      const lw = (0.45 + rnd() * 0.5) * (w - 24);
+      c.fillRect((mine ? W - w - 16 : 16) + 12, y + 12 + i * 19, lw, 8);
+    }
+    y += h + 10 + rnd() * 14;
+  }
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+}
+
+// ---- the scroll path the "user" performs ----------------------------------
+const FRAME_H = 640;
+const FPS = 12;
+const keys = [];
+{
+  let y = 40;
+  const push = (n, dy) => { for (let i = 0; i < n; i++) { y += dy; keys.push(y); } };
+  push(48, 47.3);          // steady scroll down
+  push(14, 0);             // read something
+  push(26, -63.7);         // scroll back up
+  push(8, 0);              // pause
+  push(4, 520);            // a fast flick, more than a frame per sample
+  push(60, 55.1);          // and on down
+}
+const duration = keys.length / FPS;
+const scrollAt = (t) => {
+  const f = Math.max(0, Math.min(keys.length - 1, t * FPS));
+  const i = Math.floor(f), frac = f - i;
+  const a = keys[i], b = keys[Math.min(keys.length - 1, i + 1)];
+  return Math.max(0, Math.min(DOC_H - FRAME_H, a + (b - a) * frac));
+};
+
+// ---- run the real pipeline ------------------------------------------------
+const started = performance.now();
+const { stitcher, stats } = await stitchFrames({
+  duration,
+  width: W,
+  height: FRAME_H,
+  sampleFps: FPS,
+  capture: (t, ctx) => {
+    ctx.drawImage(truth, 0, Math.round(scrollAt(t)), W, FRAME_H, 0, 0, W, FRAME_H);
+  },
+  onProgress: (p) => { out.firstChild.textContent = `running… ${(p * 100).toFixed(0)}%`; },
+});
+const elapsed = performance.now() - started;
+
+out.textContent = '';
+log(`${stats.placed}/${stats.frames} frames placed in ${(elapsed / 1000).toFixed(1)}s ` +
+    `(${stats.bisections} bisections, ${stats.relocations} re-anchored, ${stats.lost} skipped, ` +
+    `${stats.corrected.toFixed(1)}px of drift corrected)`, 'dim');
+
+// Frame 0 was anchored at document row 0, so stitched row y is truth row
+// scrollAt(t0) + y.
+const t0 = Math.min(0.02, duration / 100);
+const truthTop = Math.round(scrollAt(t0)) + stitcher.minY;
+const got = stitcher.render();
+const h = got.height;
+
+const expectedSpan = Math.max(...keys) - Math.min(...keys) + FRAME_H;
+check('covers the scrolled extent', Math.abs(h - expectedSpan) < FRAME_H * 0.1,
+      `${h}px vs ${Math.round(expectedSpan)}px expected`);
+check('no frames lost', stats.lost === 0, `${stats.lost} skipped`);
+
+// ---- pixel comparison -----------------------------------------------------
+const ref = document.createElement('canvas');
+ref.width = W; ref.height = h;
+ref.getContext('2d').drawImage(truth, 0, truthTop, W, h, 0, 0, W, h);
+
+const a = ref.getContext('2d').getImageData(0, 0, W, h).data;
+const b = got.getContext('2d').getImageData(0, 0, W, h).data;
+
+const diff = document.getElementById('diff');
+diff.width = W; diff.height = h;
+const dctx = diff.getContext('2d');
+const dimg = dctx.createImageData(W, h);
+
+let sum = 0, bad = 0, n = W * h;
+for (let p = 0; p < n; p++) {
+  const k = p * 4;
+  const d = (Math.abs(a[k] - b[k]) + Math.abs(a[k+1] - b[k+1]) + Math.abs(a[k+2] - b[k+2])) / 3;
+  sum += d;
+  if (d > 40) bad++;
+  const v = Math.min(255, d * 4);
+  dimg.data[k] = v; dimg.data[k+1] = 0; dimg.data[k+2] = Math.min(255, 40 + v);
+  dimg.data[k+3] = 255;
+}
+dctx.putImageData(dimg, 0, 0);
+
+const mean = sum / n;
+const badPct = (bad / n) * 100;
+check('mean pixel error under 6', mean < 6, `mean ${mean.toFixed(2)}`);
+check('under 2% of pixels misplaced', badPct < 2, `${badPct.toFixed(2)}% over threshold`);
+
+document.getElementById('truth').replaceWith(Object.assign(ref, { id: 'truth', className: 'view' }));
+document.getElementById('got').replaceWith(Object.assign(got, { id: 'got', className: 'view' }));
+
+log('');
+log(failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`, failures ? 'fail' : 'ok');
+</script>
+</body>
+</html>
