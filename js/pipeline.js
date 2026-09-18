@@ -64,6 +64,7 @@ export async function stitchFrames({
   let fullAtTime = null;
 
   async function grab(t) {
+    stats.frames++;
     await capture(t, fullCtx, W, H);
     fullAtTime = t;
     sigCtx.drawImage(full, 0, 0, SIG_W, H);
@@ -90,7 +91,6 @@ export async function stitchFrames({
   let xOffset = 0;
   doc.add(prev.sig, y);
   stitcher.place(full, y, prev.sig.grad, xOffset);
-  stats.frames = 1;
   stats.placed = 1;
 
   let tPrev = t0;
@@ -111,7 +111,6 @@ export async function stitchFrames({
       stats.lost++;
     }
 
-    stats.frames++;
     onProgress?.(Math.min(1, t / duration), { ...stats, height: stitcher.height, lost });
     // Yield so the page stays responsive and progress actually paints.
     if (stats.frames % 4 === 0) await raf();

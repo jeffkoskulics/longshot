@@ -12,13 +12,27 @@
 const SAMPLES = 14;
 const WORK_W = 320;
 
-export async function detectROI(video, { onProgress } = {}) {
-  const duration = video.duration;
+export function detectROI(video, opts = {}) {
+  return detectROIFromSource({
+    duration: video.duration,
+    width: video.videoWidth,
+    height: video.videoHeight,
+    draw: async (t, ctx, w, h) => {
+      await seek(video, t);
+      ctx.drawImage(video, 0, 0, w, h);
+    },
+  }, opts);
+}
+
+// Detection over any source that can paint whole frames, so it can be exercised
+// against a synthetic window with known chrome as well as against real video.
+export async function detectROIFromSource(source, { onProgress } = {}) {
+  const { duration, width: srcW, height: srcH, draw } = source;
   if (!isFinite(duration) || duration <= 0) return null;
 
-  const scale = WORK_W / video.videoWidth;
+  const scale = WORK_W / srcW;
   const w = WORK_W;
-  const h = Math.max(1, Math.round(video.videoHeight * scale));
+  const h = Math.max(1, Math.round(srcH * scale));
 
   const canvas = document.createElement('canvas');
   canvas.width = w;
@@ -30,8 +44,7 @@ export async function detectROI(video, { onProgress } = {}) {
     // Avoid the very first and last instants; players often hand back a blank
     // or duplicated frame at the exact boundaries.
     const t = duration * (0.02 + 0.96 * (i / (SAMPLES - 1)));
-    await seek(video, t);
-    ctx.drawImage(video, 0, 0, w, h);
+    await draw(t, ctx, w, h);
     const d = ctx.getImageData(0, 0, w, h).data;
     const gray = new Float32Array(w * h);
     for (let p = 0; p < w * h; p++) {

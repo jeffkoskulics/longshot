@@ -32,9 +32,16 @@ macOS — no toolchain to install). They cover shift recovery, rejection of
 false matches, a full scroll path with pauses and reversals, drift behaviour,
 and relocalisation.
 
-`tests/browser.html` is the end-to-end test: it drives the real pipeline over a
-synthetic scroll and pixel-compares the reconstruction against the document it
-was generated from. Open it from the dev server.
+```sh
+./tests/run-browser.sh
+```
+
+The end-to-end test: drives the real pipeline over a synthetic scroll and
+pixel-compares the reconstruction against the document it was generated from,
+and checks ROI detection against a window with known chrome. It runs a
+Chromium-family browser headless (Brave, Chrome, Chromium or Edge — set
+`BROWSER` to override, `HEADLESS=0` to watch it). `tests/browser.html` is the
+same test, openable by hand from the dev server for the visual diff.
 
 ## Deploying
 

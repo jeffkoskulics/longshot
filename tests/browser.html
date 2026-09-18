@@ -27,8 +27,23 @@ document it was generated from. Open this from a local server, not file://.</p>
   <div class="pane"><h2>Difference</h2><div class="scroller"><canvas id="diff" class="view"></canvas></div></div>
 </div>
 
+<script>
+// Surface failures instead of hanging: without this a thrown error means the
+// page simply never reports, and the command-line harness can only say "timed
+// out", which says nothing about what broke.
+window.__report = (text) => {
+  if (new URLSearchParams(location.search).has('report')) {
+    fetch('/__result', { method: 'POST', body: text }).catch(() => {});
+  }
+};
+window.addEventListener('error', (e) =>
+  window.__report(`UNCAUGHT ${e.message}\n  at ${e.filename}:${e.lineno}:${e.colno}`));
+window.addEventListener('unhandledrejection', (e) =>
+  window.__report(`UNHANDLED REJECTION ${e.reason && e.reason.stack || e.reason}`));
+</script>
 <script type="module">
 import { stitchFrames } from '../js/pipeline.js';
+import { detectROIFromSource } from '../js/roi.js';
 
 const out = document.getElementById('out');
 let failures = 0;
@@ -153,11 +168,58 @@ const badPct = (bad / n) * 100;
 check('mean pixel error under 6', mean < 6, `mean ${mean.toFixed(2)}`);
 check('under 2% of pixels misplaced', badPct < 2, `${badPct.toFixed(2)}% over threshold`);
 
+// ---- ROI detection against a window with known chrome ---------------------
+// The most consequential thing detection can get wrong is including static
+// chrome, so build a frame with a title bar, a tab strip and a composer pinned
+// to the bottom, and check the detected box stays inside the scrolling area.
+{
+  const WIN_W = 700, WIN_H = 800;
+  const CHROME_TOP = 96, CHROME_BOTTOM = 110;
+  const VIEW_TOP = CHROME_TOP, VIEW_H = WIN_H - CHROME_TOP - CHROME_BOTTOM;
+
+  const found = await detectROIFromSource({
+    duration: 8,
+    width: WIN_W,
+    height: WIN_H,
+    draw: (t, ctx, w, h) => {
+      const f = document.createElement('canvas');
+      f.width = WIN_W; f.height = WIN_H;
+      const c = f.getContext('2d');
+      c.fillStyle = '#0b0d12'; c.fillRect(0, 0, WIN_W, WIN_H);
+      // scrolling viewport
+      c.drawImage(truth, 60, Math.round(60 + t * 420), WIN_W - 120, VIEW_H,
+                  60, VIEW_TOP, WIN_W - 120, VIEW_H);
+      // static chrome: title bar, tabs, composer
+      c.fillStyle = '#1a1e27'; c.fillRect(0, 0, WIN_W, CHROME_TOP);
+      c.fillStyle = '#39404f';
+      c.fillRect(20, 18, 160, 12); c.fillRect(20, 58, 90, 14); c.fillRect(120, 58, 90, 14);
+      c.fillStyle = '#1a1e27'; c.fillRect(0, WIN_H - CHROME_BOTTOM, WIN_W, CHROME_BOTTOM);
+      c.fillStyle = '#2a3140'; c.fillRect(24, WIN_H - CHROME_BOTTOM + 24, WIN_W - 48, 56);
+      ctx.drawImage(f, 0, 0, w, h);
+    },
+  });
+
+  check('a scrolling region is found', !!found);
+  if (found) {
+    const slack = 24;
+    check('excludes the title bar and tab strip', found.y >= VIEW_TOP - slack,
+          `top at ${found.y}, chrome ends at ${VIEW_TOP}`);
+    check('excludes the composer', found.y + found.h <= VIEW_TOP + VIEW_H + slack,
+          `bottom at ${found.y + found.h}, viewport ends at ${VIEW_TOP + VIEW_H}`);
+    check('keeps most of the viewport height', found.h > VIEW_H * 0.8,
+          `${found.h}px of ${VIEW_H}px`);
+  }
+}
+
 document.getElementById('truth').replaceWith(Object.assign(ref, { id: 'truth', className: 'view' }));
 document.getElementById('got').replaceWith(Object.assign(got, { id: 'got', className: 'view' }));
 
 log('');
 log(failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`, failures ? 'fail' : 'ok');
+
+// When driven by tests/run-browser.sh, hand the result back to the server so the
+// run can pass or fail without a human reading the page.
+window.__report(out.textContent);
 </script>
 </body>
 </html>

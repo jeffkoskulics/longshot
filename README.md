@@ -84,9 +84,15 @@ Then <http://localhost:8765/>. Tests:
 ./tests/run.sh
 ```
 
-Those run under JavaScriptCore, which ships with macOS. `tests/browser.html`
+Those run under JavaScriptCore, which ships with macOS. The end-to-end test
 drives the real pipeline over a synthetic scroll and pixel-compares the result
-against the document it was generated from.
+against the document it was generated from:
+
+```sh
+./tests/run-browser.sh
+```
+
+Open `tests/browser.html` from the dev server to watch it and see the diff.
 
 ## Licence
 
