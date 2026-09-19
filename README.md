@@ -5,6 +5,12 @@ still image back.
 
 **[Open the app →](https://jeffkoskulics.github.io/longshot/)**
 
+> [!WARNING]
+> **Work in progress.** Registration quality varies a lot by source. Dense chat logs
+> with strongly repeated layout — Teams and Slack in particular — can come back
+> misaligned, with rows duplicated or dropped. Check the output against the original
+> before relying on it.
+
 Everything happens on your device. The video is never uploaded anywhere — there
 is no server to upload it to.
 
