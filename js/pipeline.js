@@ -9,6 +9,48 @@ const DOC_REFINE_RADIUS = 24;
 const RELOCATE_RADIUS_FRAMES = 3;
 const MAX_BISECT = 4;
 
+// Bisection exists to find an intermediate moment when a flick left no overlap.
+// Below the source video's own frame interval there is no intermediate moment to
+// find - seeking half a frame back returns the same picture - but the source
+// rate is not known here, and capping this at a guessed rate costs real
+// subdivisions on exactly the frames that need them most. MAX_BISECT already
+// bounds the work; this only stops the recursion running away on a degenerate
+// interval.
+const MIN_BISECT_GAP = 1 / 240;
+
+// How much the scroll speed is allowed to change between samples before the
+// motion prior stops vouching for a candidate. Generous: this only has to be
+// tight enough to separate one row pitch from another.
+const VELOCITY_SPREAD = (v) => Math.max(12, Math.abs(v) * 0.6 + 12);
+
+// A candidate the correlation surface cannot distinguish is accepted on the
+// motion model alone only if it sits this close to where the scroll was going.
+const COAST_TOLERANCE = (v) => Math.max(10, Math.abs(v) * 0.5 + 10);
+
+// How close in raw correlation two peaks must be to count as aliases of one
+// another - the same content matching at a different multiple of the row pitch -
+// rather than as a good answer and a bad one.
+const ALIAS_TOLERANCE = 0.02;
+
+// The largest change in scroll speed, in pixels per sample, that is taken at
+// face value.
+//
+// This is the guard on the failure that does the most visible damage. A flick
+// faster than maxShift moves the content further than the correlator is able to
+// look, so the true peak is not in the search range at all - and a correlation
+// surface asked a question it cannot answer still returns its best row, often
+// with a healthy score and margin, frequently pointing the wrong way. Accepting
+// one of those pins the rest of the recording at the wrong offset: the error
+// never recovers, because every later frame is measured against it.
+//
+// A scroll cannot reverse from +47 to -395 px between two samples. When the
+// match says it did, the honest reading is not "the user did something strange"
+// but "this pair is unmatchable" - so bisect, and look at a moment in between.
+// The bound is deliberately loose: it has to pass a genuine hard reversal, and
+// only needs to catch matches that are physically impossible.
+const ACCEL_LIMIT = (predict, H) =>
+  Math.max(0.25 * H, Math.abs(predict) * 1.5 + 0.25 * H);
+
 const SCORE_OK = 0.55;
 const MARGIN_OK = 0.06;
 const RELOCATE_SCORE_OK = 0.60;
@@ -80,7 +122,16 @@ export async function stitchFrames({
 
   const stats = {
     frames: 0, placed: 0, bisections: 0, relocations: 0, lost: 0, corrected: 0,
+    ambiguous: 0, resolvedByMap: 0, coasted: 0, implausible: 0,
     minY: 0, maxY: 0,
+  };
+
+  // The scroll's speed in document pixels per sample, smoothed. This is the
+  // only thing that can separate "+18" from "+414" on a log whose rows all look
+  // alike, so it is kept across frames and fed back into the search as a prior.
+  let velocity = null;
+  const learnVelocity = (shift) => {
+    velocity = velocity === null ? shift : velocity * 0.5 + shift * 0.5;
   };
 
   const step = 1 / cfg.sampleFps;
@@ -127,13 +178,47 @@ export async function stitchFrames({
   async function advance(t, tPrevLocal, prevFrame, yPrev, depth) {
     const frame = await grab(t);
 
+    // Scale the prediction to the actual gap between these two samples, which
+    // halves on every level of bisection.
+    const span = tPrevLocal === null ? 1 : (t - tPrevLocal) * cfg.sampleFps;
+    const predict = velocity === null ? null : velocity * span;
+
     const f2f = bestShift(prevFrame.sig, frame.sig, {
       min: -maxShift, max: maxShift, minOverlap,
+      predict,
+      sigma: predict === null ? 0 : VELOCITY_SPREAD(velocity) * Math.max(1, span),
     });
-    const confident = f2f.ok && f2f.score >= SCORE_OK && f2f.margin >= MARGIN_OK;
+    let confident = f2f.ok && f2f.score >= SCORE_OK && f2f.margin >= MARGIN_OK;
+    let shift = f2f.shift;
+    let by = 'track';
+
+    // A confident match that the scroll could not physically have made is the
+    // correlator answering a question that was out of its range. Send it to
+    // bisection rather than believing it.
+    if (confident && predict !== null &&
+        Math.abs(f2f.shift - predict) > ACCEL_LIMIT(predict, H)) {
+      stats.implausible++;
+      confident = false;
+    }
+
+    // The correlation surface says several shifts fit equally well. That is the
+    // periodic-log case, and it is not a failure - it is a question. Put it to
+    // the document map, which knows about everything seen so far rather than
+    // just the previous frame, and then to the motion model.
+    if (!confident && f2f.ambiguous) {
+      stats.ambiguous++;
+      const picked = resolve(f2f.candidates, frame, yPrev, predict);
+      if (picked) {
+        shift = picked.shift;
+        confident = true;
+        by = picked.by;
+        if (picked.by === 'map') stats.resolvedByMap++;
+        else stats.coasted++;
+      }
+    }
 
     if (!confident) {
-      if (depth < MAX_BISECT && t - tPrevLocal > 1 / 240) {
+      if (depth < MAX_BISECT && t - tPrevLocal > MIN_BISECT_GAP) {
         stats.bisections++;
         const mid = (t + tPrevLocal) / 2;
         const first = await advance(mid, tPrevLocal, prevFrame, yPrev, depth + 1);
@@ -149,21 +234,63 @@ export async function stitchFrames({
       );
       if (wide.ok && wide.score >= RELOCATE_SCORE_OK && wide.margin >= MARGIN_OK) {
         stats.relocations++;
-        return await commit(frame, wide.y, t, prevFrame);
+        return await commit(frame, wide.y, t, prevFrame, 'relocate');
       }
       return null;
     }
 
     // Dead reckoning gives the prediction; the map corrects its drift.
-    const predicted = yPrev + f2f.shift;
+    const predicted = yPrev + shift;
     const refined = matchDocument(doc, frame.sig, predicted, DOC_REFINE_RADIUS, minOverlap);
     const fused = fusePosition(predicted, refined);
     if (fused.corrected) stats.corrected += Math.abs(fused.corrected);
 
-    return await commit(frame, fused.y, t, prevFrame);
+    learnVelocity((fused.y - yPrev) / Math.max(1e-6, span));
+    return await commit(frame, fused.y, t, prevFrame, by);
   }
 
-  async function commit(frame, yNew, t, prevFrame) {
+  // Decide between shifts the frame-to-frame correlation rates equally.
+  //
+  // Two independent witnesses, in order of how much they actually know. The map
+  // has seen the whole document, so where it can tell the candidates apart it
+  // decides. Where it cannot - an exactly periodic log, where the map is as
+  // repetitive as the frame - continuity of the scroll is the only information
+  // left, and it is real information: a scroll that has been moving 18px a frame
+  // is not suddenly moving -414.
+  function resolve(candidates, frame, yPrev, predict) {
+    if (!candidates || candidates.length < 2) return null;
+
+    // Only peaks the evidence genuinely cannot separate are in play. A weaker
+    // peak that merely happens to sit near the prediction is not an alias of the
+    // right answer, it is the wrong answer, and coasting onto it is how a scroll
+    // that paused gets credited with movement it never made.
+    const top = Math.max(...candidates.map((c) => c.score));
+    const alias = candidates.filter((c) => top - c.score <= ALIAS_TOLERANCE);
+    if (alias.length < 2) return null;
+
+    const scored = alias.map((c) => ({
+      shift: c.shift,
+      map: doc.correlate(frame.sig, yPrev + c.shift, minOverlap),
+    })).filter((c) => c.map !== null);
+
+    if (scored.length) {
+      scored.sort((a, b) => b.map - a.map);
+      const top = scored[0];
+      const next = scored[1];
+      if (top.map >= SCORE_OK && (!next || top.map - next.map >= MARGIN_OK)) {
+        return { shift: top.shift, by: 'map' };
+      }
+    }
+
+    if (predict === null) return null;
+    const tol = COAST_TOLERANCE(velocity);
+    const near = alias
+      .filter((c) => Math.abs(c.shift - predict) <= tol)
+      .sort((a, b) => Math.abs(a.shift - predict) - Math.abs(b.shift - predict));
+    return near.length ? { shift: near[0].shift, by: 'motion' } : null;
+  }
+
+  async function commit(frame, yNew, t, prevFrame, by = 'track') {
     const dx = estimateDx(prevFrame.cols, frame.cols, cfg.maxDxPerStep);
     const xNew = clamp(xOffset + dx, -24, 24);
 
@@ -171,7 +298,7 @@ export async function stitchFrames({
     doc.add(frame.sig, yNew);
     stitcher.place(full, yNew, frame.sig.grad, xNew);
     stats.placed++;
-    onFrame?.({ t, y: yNew, x: xNew });
+    onFrame?.({ t, y: yNew, x: xNew, by });
     return { y: yNew, xOffset: xNew, frame, t };
   }
 }

@@ -18,7 +18,7 @@ run() {
 
 if [ -x "$JSC" ] || command -v node >/dev/null 2>&1; then
   status=0
-  for t in tests/registration.test.mjs tests/recording.test.mjs; do
+  for t in tests/registration.test.mjs tests/periodic.test.mjs tests/recording.test.mjs; do
     echo "== $t"
     run "$t" || status=1
   done

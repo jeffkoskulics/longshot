@@ -86,15 +86,45 @@ function nccAt(a, b, shift, minOverlap) {
   return num / den;
 }
 
-// Search a shift range and return the best match with a confidence measure.
+// How far a candidate may sit from the motion prediction before it is fully
+// discounted, and by how much. The penalty is deliberately small: on a document
+// with any variety at all the raw correlation difference between the true peak
+// and its rivals is an order of magnitude larger, so the prior cannot overrule
+// real evidence. Its whole job is to break ties that carry no evidence either
+// way.
+const PRIOR_WEIGHT = 0.25;
+const LOBE = 3;
+
+// How far apart two peaks must be to count as different explanations rather
+// than two samples of the same one.
+const PEAK_SEPARATION = 4;
+
+// Search a shift range and return the best match, a confidence measure, and the
+// rival explanations.
 //
 // Confidence is deliberately two-part. A high peak alone is not enough: a
 // console showing twenty identical log lines correlates beautifully at the wrong
 // offset. The ratio test - how far the best peak stands above the best rival
 // outside its own lobe - is what actually catches that case.
-export function bestShift(prev, curr, { min, max, minOverlap, lumWeight = 0.6 }) {
-  let bestScore = -Infinity;
-  let bestShift = 0;
+//
+// But catching it is not the same as handling it. A Teams or Slack log is very
+// nearly periodic: uniform row pitch, a fixed avatar column, similar line
+// lengths. Several shifts then correlate at *exactly* 1.0, the margin is 0, and
+// a pure ratio test rejects every frame of a perfectly trackable scroll. So two
+// things are added here.
+//
+// `predict` supplies what the shift is expected to be, from the velocity the
+// scroll already had. Scrolling is continuous; a frame that could equally be
+// +18 or +414 px is +18 if the last five frames were +18. The prediction enters
+// as a small penalty on distance rather than as a hard window, so a genuine
+// change in speed still wins on evidence.
+//
+// `candidates` hands the caller the well-separated peaks it did not pick, so an
+// ambiguity the prior cannot settle can be put to an independent witness - the
+// document map - instead of being thrown away.
+export function bestShift(prev, curr, {
+  min, max, minOverlap, lumWeight = 0.6, predict = null, sigma = 0,
+}) {
   const scores = new Map();
 
   for (let s = min; s <= max; s++) {
@@ -103,36 +133,98 @@ export function bestShift(prev, curr, { min, max, minOverlap, lumWeight = 0.6 })
     const g = nccAt(prev.grad, curr.grad, s, minOverlap);
     const score = g === null ? l : lumWeight * l + (1 - lumWeight) * g;
     scores.set(s, score);
-    if (score > bestScore) {
-      bestScore = score;
-      bestShift = s;
+  }
+  if (!scores.size) {
+    return { shift: 0, score: 0, margin: 0, ok: false, ambiguous: false, candidates: [] };
+  }
+
+  // Distance from the prediction, in score units. Used *only* to order
+  // candidates the correlation cannot separate - never to compute confidence.
+  //
+  // Letting the prior into the margin was tempting and wrong: penalising the
+  // rivals of a prediction makes a wrong prediction look certain, which is
+  // precisely the wrong behaviour at the one moment it matters - a fast flick,
+  // where the true shift is nowhere near what the scroll was doing a moment ago.
+  // So the confidence test below sees raw correlation and nothing else, exactly
+  // as it did before, and the prior only gets a vote when that test is a tie.
+  const spread = sigma > 0 ? sigma : 1;
+  const penalty = (s) => {
+    if (predict === null) return Math.abs(s) * 1e-9;
+    const d = (s - predict) / spread;
+    return PRIOR_WEIGHT * Math.min(1, d * d);
+  };
+
+  const TIE = 1e-4;
+  let bestShift = 0;
+  let bestScore = -Infinity;
+  for (const [s, v] of scores) {
+    if (v > bestScore + TIE) {
+      bestScore = v; bestShift = s;
+    } else if (v > bestScore - TIE && penalty(s) < penalty(bestShift)) {
+      // Indistinguishable on evidence: take the one the scroll was heading for.
+      bestScore = Math.max(bestScore, v); bestShift = s;
     }
   }
-  if (bestScore === -Infinity) return { shift: 0, score: 0, margin: 0, ok: false };
 
-  // Best rival outside the peak's own lobe.
+  // Best rival outside the peak's own lobe, on raw scores.
   let rival = -Infinity;
   for (const [s, v] of scores) {
-    if (Math.abs(s - bestShift) <= 3) continue;
+    if (Math.abs(s - bestShift) <= LOBE) continue;
     if (v > rival) rival = v;
   }
   const margin = rival === -Infinity ? 1 : bestScore - rival;
 
-  // Parabolic interpolation against the neighbours gives sub-pixel placement.
-  // Rounding every frame to whole pixels is the other classic source of drift:
-  // a systematic quarter-pixel bias over 600 frames is 150px of error.
-  let refined = bestShift;
-  const a = scores.get(bestShift - 1);
-  const c = scores.get(bestShift + 1);
-  if (a !== undefined && c !== undefined) {
-    const denom = a - 2 * bestScore + c;
-    if (Math.abs(denom) > 1e-9) {
-      const delta = (0.5 * (a - c)) / denom;
-      if (Math.abs(delta) < 1) refined = bestShift + delta;
-    }
-  }
+  // The peaks that remain plausible, best first, for a caller that wants to ask
+  // a second witness. Raw scores, so the caller is not re-reading our prior.
+  const candidates = collectPeaks(scores, penalty, bestShift);
 
-  return { shift: refined, score: bestScore, margin, ok: true };
+  return {
+    shift: subpixel(scores, bestShift),
+    score: bestScore,
+    margin,
+    ok: true,
+    // True when the correlation surface genuinely does not distinguish the
+    // options - the periodic-document case, as opposed to a plain bad match.
+    ambiguous: bestScore >= 0.55 && margin < 0.06 && candidates.length > 1,
+    candidates,
+  };
+}
+
+// Local maxima, thinned so that two samples of one lobe do not both survive.
+function collectPeaks(scores, penalty, bestShift, limit = 6) {
+  const peaks = [];
+  for (const [s, v] of scores) {
+    const l = scores.get(s - 1);
+    const r = scores.get(s + 1);
+    if ((l !== undefined && l > v) || (r !== undefined && r > v)) continue;
+    peaks.push({ shift: s, score: v, adj: v - penalty(s) });
+  }
+  // Best evidence first; the prior only orders peaks the evidence ties.
+  peaks.sort((a, b) => (Math.abs(b.score - a.score) > 1e-4 ? b.score - a.score : a.adj > b.adj ? -1 : 1));
+
+  const kept = [];
+  for (const p of peaks) {
+    if (kept.some((k) => Math.abs(k.shift - p.shift) < PEAK_SEPARATION)) continue;
+    kept.push({ ...p, shift: subpixel(scores, p.shift) });
+    if (kept.length >= limit) break;
+  }
+  // The chosen peak first, whatever the sort did with near-equal adjustments.
+  kept.sort((a, b) => (Math.abs(a.shift - bestShift) < 1 ? -1 : 0) - (Math.abs(b.shift - bestShift) < 1 ? -1 : 0));
+  return kept;
+}
+
+// Parabolic interpolation against the neighbours gives sub-pixel placement.
+// Rounding every frame to whole pixels is the other classic source of drift: a
+// systematic quarter-pixel bias over 600 frames is 150px of error.
+function subpixel(scores, at) {
+  const peak = scores.get(at);
+  const a = scores.get(at - 1);
+  const c = scores.get(at + 1);
+  if (a === undefined || c === undefined) return at;
+  const denom = a - 2 * peak + c;
+  if (Math.abs(denom) < 1e-9) return at;
+  const delta = (0.5 * (a - c)) / denom;
+  return Math.abs(delta) < 1 ? at + delta : at;
 }
 
 // Match a frame against the accumulated document rather than against its
@@ -142,8 +234,6 @@ export function bestShift(prev, curr, { min, max, minOverlap, lumWeight = 0.6 })
 // compounding. `predicted` seeds the search so the cost stays bounded.
 export function matchDocument(doc, curr, predicted, radius, minOverlap) {
   const H = curr.height;
-  let bestScore = -Infinity;
-  let bestY = predicted;
   const scores = new Map();
 
   const start = Math.round(predicted - radius);
@@ -153,35 +243,41 @@ export function matchDocument(doc, curr, predicted, radius, minOverlap) {
     const s = doc.correlate(curr, y, minOverlap);
     if (s === null) continue;
     scores.set(y, s);
-    if (s > bestScore) {
-      bestScore = s;
-      bestY = y;
-    }
   }
-  if (bestScore === -Infinity) return { y: predicted, score: 0, margin: 0, ok: false };
+  if (!scores.size) return { y: predicted, score: 0, margin: 0, ok: false, ambiguous: false };
+
+  // Same tie-break as bestShift, for the same reason: on a periodic log the map
+  // correlates identically at several offsets, and resolving that by scan order
+  // snapped the frame a row or two back on every single frame - which is exactly
+  // how a scroll reconstructs shorter than it was, with messages duplicated.
+  const spread = Math.max(1, radius / 2);
+  const penalty = (y) => {
+    const d = (y - predicted) / spread;
+    return PRIOR_WEIGHT * Math.min(1, d * d);
+  };
+
+  let bestY = Math.round(predicted);
+  let bestAdj = -Infinity;
+  for (const [y, v] of scores) {
+    const adj = v - penalty(y);
+    if (adj > bestAdj) { bestAdj = adj; bestY = y; }
+  }
+  const bestScore = scores.get(bestY);
 
   let rival = -Infinity;
   for (const [y, v] of scores) {
-    if (Math.abs(y - bestY) <= 3) continue;
-    if (v > rival) rival = v;
+    if (Math.abs(y - bestY) <= LOBE) continue;
+    const adj = v - penalty(y);
+    if (adj > rival) rival = adj;
   }
-
-  let refined = bestY;
-  const a = scores.get(bestY - 1);
-  const c = scores.get(bestY + 1);
-  if (a !== undefined && c !== undefined) {
-    const denom = a - 2 * bestScore + c;
-    if (Math.abs(denom) > 1e-9) {
-      const delta = (0.5 * (a - c)) / denom;
-      if (Math.abs(delta) < 1) refined = bestY + delta;
-    }
-  }
+  const margin = rival === -Infinity ? 1 : bestAdj - rival;
 
   return {
-    y: refined,
+    y: subpixel(scores, bestY),
     score: bestScore,
-    margin: rival === -Infinity ? 1 : bestScore - rival,
+    margin,
     ok: true,
+    ambiguous: bestScore >= 0.5 && margin < 0.06,
     _H: H,
   };
 }

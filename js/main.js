@@ -314,10 +314,22 @@ async function finish(stitcher, stats, elapsedMs) {
   const files = await exportPNGs(stitcher);
   const ratio = (stitcher.height / roi.h).toFixed(1);
 
+  // When a lot of frames could only be placed by leaning on scroll continuity,
+  // the source was too uniform for the pixels alone to say where each frame
+  // belonged. The result may still be right, but the user is the only one who
+  // can confirm that, so say so rather than presenting it as measured.
+  const assumed = (stats.resolvedByMap || 0) + (stats.coasted || 0);
+  const uniform = stats.placed > 0 && assumed > stats.placed * 0.1;
+
   $('donestat').textContent =
     `${stitcher.frameW} × ${Math.round(stitcher.height)} px — about ${ratio} screens of content, ` +
     `from ${stats.placed} placed frames in ${(elapsedMs / 1000).toFixed(1)}s.` +
-    (stats.lost ? ` ${stats.lost} frames could not be matched and were skipped.` : '');
+    (stats.lost ? ` ${stats.lost} frames could not be matched and were skipped.` : '') +
+    (uniform
+      ? ' This source repeats closely from row to row, so some frames were placed ' +
+        'by following the scroll rather than by matching pixels — check the result ' +
+        'against the original.'
+      : '');
 
   const box = $('downloads');
   box.innerHTML = '';

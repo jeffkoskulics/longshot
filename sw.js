@@ -2,7 +2,7 @@
 // app never talks to a server once loaded, so offline is the normal case rather
 // than a degraded one.
 
-const CACHE = 'longshot-v2';
+const CACHE = 'longshot-v3';
 const SHELL = [
   './',
   'index.html',

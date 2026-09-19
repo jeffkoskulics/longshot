@@ -32,7 +32,9 @@ JavaScriptCore (ships with macOS — no toolchain to install). The registration
 tests cover shift recovery, rejection of false matches, a full scroll path with
 pauses and reversals, drift behaviour, and relocalisation.
 `tests/recording.test.mjs` asserts that deleting a capture really does revoke
-every URL it issued and drop the video data.
+every URL it issued and drop the video data. `tests/periodic.test.mjs` pins the
+near-periodic behaviour, including the rule that the motion prior must not change
+the confidence margin.
 
 ```sh
 ./tests/run-browser.sh
@@ -91,6 +93,23 @@ Things that look like details but are not:
   reference. The tests assert shrinking error, not zero error.
 - **The confidence ratio test matters more than the peak.** A console showing
   twenty identical log lines correlates beautifully at the wrong offset.
+- **…but an ambiguous frame is a question, not a failure.** A Teams or Slack log
+  is very nearly periodic, so several shifts tie and the ratio test used to
+  reject *every frame* of a perfectly trackable scroll. `bestShift` now returns
+  the rival peaks, and the pipeline puts the tie to the document map first and to
+  scroll continuity second. `tests/browser.html` has a near-periodic document
+  precisely because the varied one cannot show this.
+- **The motion prior may break ties and nothing else.** Letting it into the
+  margin — penalising the rivals of a prediction — makes a *wrong* prediction
+  look certain, which is catastrophic at the one moment it matters. Confidence is
+  computed from raw correlation, exactly as before; the prior only orders
+  candidates the evidence has already tied. There is a test for this.
+- **A match the scroll could not physically have made is out-of-range, not news.**
+  A flick that moves further than `maxShift` puts the true shift outside the
+  search entirely, and the correlator still returns its best row — often
+  confidently, often pointing backwards. Accepting one pinned every later frame
+  at the wrong offset for the rest of the recording: 900px+ of permanent error
+  from a single frame. `ACCEL_LIMIT` rejects those and bisects instead.
 - **`repaint()` in the pipeline exists because bisection recurses.** The
   full-resolution scratch canvas can hold a different moment than the frame being
   composited. Removing it reintroduces a silent pixel-attribution bug.

@@ -48,6 +48,7 @@ import { detectROIFromSource } from '../js/roi.js';
 const out = document.getElementById('out');
 let failures = 0;
 const log = (s, cls = '') => out.insertAdjacentHTML('beforeend', `\n<span class="${cls}">${s}</span>`);
+const log_ = (s, cls = 'dim') => log(s, cls);
 const check = (name, cond, detail = '') => {
   if (!cond) failures++;
   log(`${cond ? '  ok  ' : '  FAIL'} ${name}${detail ? '  — ' + detail : ''}`, cond ? 'ok' : 'fail');
@@ -167,6 +168,108 @@ const mean = sum / n;
 const badPct = (bad / n) * 100;
 check('mean pixel error under 6', mean < 6, `mean ${mean.toFixed(2)}`);
 check('under 2% of pixels misplaced', badPct < 2, `${badPct.toFixed(2)}% over threshold`);
+
+// ---- a near-periodic log, and a flick faster than the search range --------
+//
+// The document above has random block widths and random gaps, which makes every
+// scroll position unmistakable. A real Teams or Slack log does not: uniform row
+// pitch, a fixed avatar column, similar line lengths. That is the case the
+// registration used to give up on, rejecting frame after frame of a perfectly
+// trackable scroll - so it gets its own document here rather than being assumed
+// to behave like the varied one.
+{
+  const LOG_W = 560, LOG_H = 12000, PITCH = 18;
+  const logDoc = document.createElement('canvas');
+  logDoc.width = LOG_W; logDoc.height = LOG_H;
+  {
+    const c = logDoc.getContext('2d');
+    c.fillStyle = '#ffffff'; c.fillRect(0, 0, LOG_W, LOG_H);
+    let seed = 7;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    let y = 16;
+    while (y < LOG_H) {
+      c.fillStyle = '#6264a7';
+      c.beginPath(); c.arc(24, y + 10, 9, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#252423'; c.fillRect(44, y + 4, 70 + rnd() * 60, 8);
+      c.fillStyle = '#a19f9d'; c.fillRect(150, y + 5, 52, 6);
+      y += PITCH;
+      c.fillStyle = '#3b3a39';
+      const lines = 1 + Math.floor(rnd() * 3);
+      for (let i = 0; i < lines; i++) {
+        c.fillRect(44, y + 5, (0.55 + rnd() * 0.42) * (LOG_W - 90), 7);
+        y += PITCH;
+      }
+      y += PITCH;
+    }
+  }
+
+  const VIEW_H = 620, VFPS = 10;
+
+  async function scroll(name, keys, src = logDoc, srcW = LOG_W, srcH = LOG_H) {
+    const dur = keys.length / VFPS;
+    const at = (t) => {
+      const f = Math.max(0, Math.min(keys.length - 1, t * VFPS));
+      const i = Math.floor(f), frac = f - i;
+      const a = keys[i], b = keys[Math.min(keys.length - 1, i + 1)];
+      return Math.max(0, Math.min(srcH - VIEW_H, a + (b - a) * frac));
+    };
+    const trace = [];
+    const { stitcher, stats } = await stitchFrames({
+      duration: dur, width: srcW, height: VIEW_H, sampleFps: VFPS,
+      capture: (t, ctx) => {
+        ctx.drawImage(src, 0, Math.round(at(t)), srcW, VIEW_H, 0, 0, srcW, VIEW_H);
+      },
+      onFrame: ({ t, y }) => trace.push({ y, truth: at(t) }),
+    });
+    const base = trace.length ? trace[0].truth - trace[0].y : 0;
+    const worst = trace.reduce((m, r) => Math.max(m, Math.abs(r.y + base - r.truth)), 0);
+    const expected = Math.max(...keys) - Math.min(...keys) + VIEW_H;
+    log_(`  ${name}: ${stats.placed} placed, ${stats.lost} skipped, ` +
+         `${stats.ambiguous} ambiguous (${stats.resolvedByMap} by map, ${stats.coasted} by motion), ` +
+         `${stats.implausible} implausible rejected`);
+    return { worst, height: stitcher.height, expected, stats };
+  }
+
+  const keysOf = (spec) => {
+    const keys = []; let y = 40;
+    for (const [n, dy] of spec) for (let i = 0; i < n; i++) { y += dy; keys.push(y); }
+    return keys;
+  };
+
+  log('');
+  log('a near-periodic chat log', 'dim');
+  const steady = await scroll('steady scroll', keysOf([[120, 46]]));
+  check('tracks a uniform log without losing frames', steady.stats.lost === 0,
+        `${steady.stats.lost} skipped`);
+  check('stays on the rows through a uniform log', steady.worst < 4,
+        `worst ${steady.worst.toFixed(1)}px`);
+  check('reconstructs the full extent', Math.abs(steady.height - steady.expected) < steady.expected * 0.03,
+        `${Math.round(steady.height)}px vs ${Math.round(steady.expected)}px`);
+
+  log('');
+  log('a flick faster than the correlator can see', 'dim');
+  // 520px between samples on a 620px frame moves the content further than the
+  // search range covers, so the true shift is not among the options at all. The
+  // match that comes back is spurious - and believing one used to pin every
+  // later frame at the wrong offset for the whole rest of the recording, which
+  // is the single most destructive thing this pipeline can do.
+  const flickPath = keysOf([[10, 47], [4, 520], [20, 47]]);
+  const flick = await scroll('flick, varied content', flickPath, truth, W, DOC_H);
+  check('survives a flick beyond the search range', flick.worst < 8,
+        `worst ${flick.worst.toFixed(1)}px off`);
+  check('does not lose the document after a flick',
+        Math.abs(flick.height - flick.expected) < flick.expected * 0.05,
+        `${Math.round(flick.height)}px vs ${Math.round(flick.expected)}px`);
+
+  // The same flick on a uniform log is the acknowledged limit. The jump lands on
+  // new ground, so the map cannot vouch for it and the row pitch makes several
+  // landings equally plausible; the result settles a few rows out rather than a
+  // screen and a half out. Asserted loosely and deliberately - this number is a
+  // known weakness, not a target that has been hit.
+  const flickLog = await scroll('flick, uniform log', flickPath);
+  check('a flick on a uniform log stays within a few rows', flickLog.worst < 140,
+        `worst ${flickLog.worst.toFixed(1)}px off`);
+}
 
 // ---- ROI detection against a window with known chrome ---------------------
 // The most consequential thing detection can get wrong is including static

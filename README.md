@@ -6,10 +6,10 @@ still image back.
 **[Open the app →](https://jeffkoskulics.github.io/longshot/)**
 
 > [!WARNING]
-> **Work in progress.** Registration quality varies a lot by source. Dense chat logs
-> with strongly repeated layout — Teams and Slack in particular — can come back
-> misaligned, with rows duplicated or dropped. Check the output against the original
-> before relying on it.
+> **Work in progress.** Steady scrolling reconstructs reliably, including in chat
+> logs with strongly repeated layout. A very fast flick through a uniform log can
+> still land a few rows out. Check the output against the original before relying
+> on it.
 
 Everything happens on your device. The video is never uploaded anywhere — there
 is no server to upload it to.
@@ -93,6 +93,12 @@ your own file and is never deleted — only the decoded copy is released.
 - **Unbounded drift correction.** Error is pulled back only over ground already
   mapped, and only to the accuracy that ground was first mapped with. There is no
   absolute reference; a long one-way scroll has nothing to correct against.
+- **A very fast flick through a uniform log.** When a single sample jumps further
+  than the correlator can search *and* lands on ground the app has not seen, on a
+  log whose rows all look alike, several landings are equally consistent with the
+  pixels. It settles within a few rows rather than a screen out, and the result
+  page says when it had to rely on scroll continuity — but a few rows out is
+  still out. Scrolling steadily avoids it entirely.
 
 ## Development
 
