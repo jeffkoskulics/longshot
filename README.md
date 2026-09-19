@@ -118,6 +118,14 @@ against the document it was generated from:
 
 Open `tests/browser.html` from the dev server to watch it and see the diff.
 
+## teams-driver
+
+`teams-driver/` is a separate tool that shares no code with the app above. It
+drives the Teams web client to archive a chat into an Obsidian folder — text,
+timestamps, shared files and their version history. It is a Node program with
+its own dependency, and it is not served, imported or built by the PWA. See
+`teams-driver/README.md`.
+
 ## Licence
 
 MIT
